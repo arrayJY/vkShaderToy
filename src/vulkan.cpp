@@ -1,10 +1,12 @@
 #include "vulkan.hpp"
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
 #include <algorithm>
-#include <cstring>
 #include <format>
 #include <iostream>
+#include <ranges>
 #include <string>
 #include <vector>
 
@@ -15,7 +17,14 @@ const bool enableValidationLayers = true;
 #endif
 
 /** Vulkan **/
-void VulkanApp::initVulkan() { createInstance(); }
+void VulkanApp::initVulkan() {
+  createInstance();
+  setupDebugMessenger();
+  createSurface();
+  pickPhysicalDevice();
+  createLogicalDevice();
+  createSwapChain();
+}
 
 bool checkValidationLayerSupport(const std::vector<const char *> &layerNames) {
   const std::vector<vk::LayerProperties> properties =
@@ -65,20 +74,22 @@ void VulkanApp::createInstance() {
                               .pEngineName = "No Engine",
                               .engineVersion = VK_MAKE_VERSION(1, 0, 0),
                               .apiVersion = VK_API_VERSION_1_3};
+
     static const std::vector<const char *> validationLayers{
         "VK_LAYER_KHRONOS_validation", "VK_LAYER_LUNARG_monitor"};
-
     if (enableValidationLayers &&
         !checkValidationLayerSupport(validationLayers)) {
       throw std::runtime_error("Not support validation layer");
     }
 
+    instanceExtensions.push_back(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
     instanceExtensions.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
     if (enableValidationLayers) {
       instanceExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
 
     VkInstanceCreateInfo createInfo{
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .pApplicationInfo = &appInfo,
         .enabledLayerCount = static_cast<uint32_t>(validationLayers.size()),
         .ppEnabledLayerNames = validationLayers.data(),
@@ -89,73 +100,146 @@ void VulkanApp::createInstance() {
 
     instance = vk::createInstance(createInfo);
   }
+}
 
-  // Setup debug messenger
-  {
-    using SeverityFlag = vk::DebugUtilsMessageSeverityFlagBitsEXT;
-    using MessageType = vk::DebugUtilsMessageTypeFlagBitsEXT;
+void VulkanApp::setupDebugMessenger() {
+  using SeverityFlag = vk::DebugUtilsMessageSeverityFlagBitsEXT;
+  using MessageType = vk::DebugUtilsMessageTypeFlagBitsEXT;
 
-    auto callbackFunc =
-        reinterpret_cast<PFN_vkDebugUtilsMessengerCallbackEXT>(debugCallback);
-    auto debugMessengerInfo =
-        vk::DebugUtilsMessengerCreateInfoEXT()
-            .setMessageSeverity(SeverityFlag::eInfo | SeverityFlag::eVerbose |
-                                SeverityFlag::eWarning | SeverityFlag::eError)
-            .setMessageType(MessageType::eGeneral | MessageType::eValidation |
-                            MessageType::ePerformance)
-            .setPfnUserCallback(callbackFunc)
-            .setPUserData(nullptr);
+  auto callbackFunc =
+      reinterpret_cast<PFN_vkDebugUtilsMessengerCallbackEXT>(debugCallback);
+  auto debugMessengerInfo =
+      vk::DebugUtilsMessengerCreateInfoEXT()
+          .setMessageSeverity(SeverityFlag::eInfo | SeverityFlag::eVerbose |
+                              SeverityFlag::eWarning | SeverityFlag::eError)
+          .setMessageType(MessageType::eGeneral | MessageType::eValidation |
+                          MessageType::ePerformance)
+          .setPfnUserCallback(callbackFunc)
+          .setPUserData(nullptr);
 
-    vk::DynamicLoader dl;
-    PFN_vkGetInstanceProcAddr GetInstanceProcAddr =
-        dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
-    vk::DispatchLoaderDynamic dispatch(instance, GetInstanceProcAddr);
-    if (instance.createDebugUtilsMessengerEXT(&debugMessengerInfo, 0,
-                                              &debugMessenger, dispatch) !=
-        vk::Result::eSuccess) {
-      throw std::runtime_error("Create debug util messenger failed");
-    };
+  vk::DynamicLoader dl;
+  PFN_vkGetInstanceProcAddr GetInstanceProcAddr =
+      dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
+  vk::DispatchLoaderDynamic dispatch(instance, GetInstanceProcAddr);
+  if (instance.createDebugUtilsMessengerEXT(&debugMessengerInfo, 0,
+                                            &debugMessenger,
+                                            dispatch) != vk::Result::eSuccess) {
+    throw std::runtime_error("Create debug util messenger Failed");
+  };
+}
+
+void VulkanApp::createSurface() {
+  auto surfaceInfo =
+      vk::Win32SurfaceCreateInfoKHR().setHwnd(hwnd).setHinstance(hInstance);
+  surface = instance.createWin32SurfaceKHR(surfaceInfo);
+}
+
+void VulkanApp::pickPhysicalDevice() {
+  auto physicalDevices = instance.enumeratePhysicalDevices();
+  if (physicalDevices.empty()) {
+    throw std::runtime_error("No physical device.");
+  } else {
+    gpu = physicalDevices[0];
+  }
+}
+
+void VulkanApp::createLogicalDevice() {
+
+  queueFamilyProps = gpu.getQueueFamilyProperties();
+
+  const auto supports =
+      std::views::iota((std::size_t)0, queueFamilyProps.size()) |
+      std::views::transform([this](auto i) {
+        auto support = gpu.getSurfaceSupportKHR(i, surface);
+        return support == VK_TRUE &&
+               queueFamilyProps[i].queueFlags & vk::QueueFlagBits::eGraphics;
+      });
+  const auto graphicProp = std::find(supports.begin(), supports.end(), true);
+  bool found = graphicProp != supports.end();
+  if (!found) {
+    throw std::runtime_error("No found surface support queue.");
+  }
+  graphicIndex =
+      static_cast<uint32_t>(std::distance(supports.begin(), graphicProp));
+
+  auto feature = vk::PhysicalDeviceFeatures().setGeometryShader(VK_TRUE);
+
+  float priorites[] = {0.0f};
+  deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+
+  auto deviceQueueInfo = vk::DeviceQueueCreateInfo()
+                             .setQueueCount(1)
+                             .setPQueuePriorities(priorites)
+                             .setQueueFamilyIndex(graphicIndex);
+  auto deviceInfo = vk::DeviceCreateInfo()
+                        .setQueueCreateInfoCount(1)
+                        .setPQueueCreateInfos(&deviceQueueInfo)
+                        .setEnabledExtensionCount(deviceExtensions.size())
+                        .setPpEnabledExtensionNames(deviceExtensions.data())
+                        .setPEnabledFeatures(&feature);
+
+  device = gpu.createDevice(deviceInfo);
+  graphicQueue = device.getQueue(graphicIndex, 0);
+
+  surfaceFormats = gpu.getSurfaceFormatsKHR(surface);
+  if (surfaceFormats.empty()) {
+    throw std::runtime_error("Get surface formats khr error");
   }
 
-  // Create device and queue
-  {
-    auto physicalDevices = instance.enumeratePhysicalDevices();
-    if (physicalDevices.empty()) {
-      throw std::runtime_error("No physical device.");
-    } else {
-      gpu = physicalDevices[0];
-    }
+  presentModes = gpu.getSurfacePresentModesKHR(surface);
+  if (presentModes.empty()) {
+    throw std::runtime_error("Get present modes khr error");
+  }
 
-    queueFamilyProps = gpu.getQueueFamilyProperties();
+  surfaceCapabilities = gpu.getSurfaceCapabilitiesKHR(surface);
+}
 
-    auto graphicProp = std::find_if(
-        queueFamilyProps.begin(), queueFamilyProps.end(), [](auto &prop) {
-          return prop.queueFlags & vk::QueueFlagBits::eGraphics;
-        });
+void VulkanApp::createSwapChain() {
+  format = surfaceFormats[0].format;
+  frameCount = surfaceCapabilities.minImageCount;
 
-    if (auto found = graphicProp != queueFamilyProps.end(); !found) {
-      throw std::runtime_error("No found queue family.");
-    }
+  auto swapchainInfo =
+      vk::SwapchainCreateInfoKHR()
+          .setSurface(surface)
+          .setImageFormat(format)
+          .setMinImageCount(frameCount)
+          .setImageExtent(vk::Extent2D(width, height))
+          .setPresentMode(vk::PresentModeKHR::eFifo)
+          .setImageSharingMode(vk::SharingMode::eExclusive)
+          .setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::eOpaque)
+          .setImageColorSpace(surfaceFormats[0].colorSpace)
+          .setImageUsage(vk::ImageUsageFlagBits::eColorAttachment)
+          .setImageArrayLayers(1)
+          .setClipped(true);
 
-    graphicIndex = std::distance(queueFamilyProps.begin(), graphicProp);
+  swapchain = device.createSwapchainKHR(swapchainInfo);
 
-    auto feature = vk::PhysicalDeviceFeatures().setGeometryShader(VK_TRUE);
+  swapchainImages = device.getSwapchainImagesKHR(swapchain);
+  frameCount = swapchainImages.size();
 
-    float priorites[] = {0.0f};
-    deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+  swapchainIamgesViews.resize(frameCount);
+  for (uint32_t i = 0; i < frameCount; i++) {
+    auto createImageViewInfo =
+        vk::ImageViewCreateInfo()
+            .setViewType(vk::ImageViewType::e2D)
+            .setSubresourceRange(vk::ImageSubresourceRange(
+                vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1))
+            .setFormat(format)
+            .setImage(swapchainImages[i])
+            .setComponents(
+                vk::ComponentMapping(vk::ComponentSwizzle::eIdentity,
+                                     vk::ComponentSwizzle::eIdentity,
+                                     vk::ComponentSwizzle::eIdentity,
+                                     vk::ComponentSwizzle::eIdentity));
+    swapchainIamgesViews[i] = device.createImageView(createImageViewInfo);
+  }
 
-    auto deviceQueueInfo = vk::DeviceQueueCreateInfo()
-                               .setQueueCount(1)
-                               .setPQueuePriorities(priorites)
-                               .setQueueFamilyIndex(graphicIndex);
-    auto deviceInfo = vk::DeviceCreateInfo()
-                          .setQueueCreateInfoCount(1)
-                          .setPQueueCreateInfos(&deviceQueueInfo)
-                          .setEnabledExtensionCount(deviceExtensions.size())
-                          .setPpEnabledExtensionNames(deviceExtensions.data())
-                          .setPEnabledFeatures(&feature);
-    device = gpu.createDevice(deviceInfo);
-    graphicQueue = device.getQueue(graphicIndex, 0);
+  auto presentInfo = vk::PresentInfoKHR()
+                         .setPImageIndices(&currentImage)
+                         .setSwapchainCount(1)
+                         .setPSwapchains(&swapchain);
+  if (graphicQueue.presentKHR(presentInfo) != vk::Result::eSuccess) {
+    throw std::runtime_error("Set present KHR failed.");
   }
 }
 
@@ -166,6 +250,11 @@ void VulkanApp::initWindow() {
   glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
   window =
       glfwCreateWindow(WIDTH, HEIGHT, "Vulkan Shader Toy", nullptr, nullptr);
+  hwnd = glfwGetWin32Window(window);
+  hInstance = GetModuleHandle(nullptr);
+  int w, h;
+  glfwGetWindowSize(window, &w, &h);
+  width = w, height = h;
 }
 void VulkanApp::mainLoop() {
   while (!glfwWindowShouldClose(window)) {
