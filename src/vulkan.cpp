@@ -398,6 +398,22 @@ void VulkanApp::createGraphicPipline() {
   }
 }
 
+void VulkanApp::createFrambuffers() {
+  swapChainFramebuffers.resize(swapchainIamgesViews.size());
+  for (auto i = 0; i < swapchainIamgesViews.size(); i++) {
+    vk::ImageView attachments[] = {swapchainIamgesViews[i]};
+
+    auto frambufferInfo = vk::FramebufferCreateInfo()
+                              .setRenderPass(renderPass)
+                              .setAttachmentCount(1)
+                              .setPAttachments(attachments)
+                              .setWidth(width)
+                              .setHeight(height)
+                              .setLayers(1);
+    swapChainFramebuffers[i] = device.createFramebuffer(frambufferInfo);
+  }
+}
+
 void VulkanApp::present() {
   auto presentInfo = vk::PresentInfoKHR()
                          .setImageIndices(currentImage)

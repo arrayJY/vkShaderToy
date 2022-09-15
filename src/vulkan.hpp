@@ -16,6 +16,7 @@ public:
   void createImageView();
   void createRenderPass();
   void createGraphicPipline();
+  void createFrambuffers();
   void present();
 
   void initWindow();
@@ -45,6 +46,12 @@ private:
   uint32_t frameCount = 0;
   uint32_t width = 0, height = 0;
 
+  std::vector<const char *> instanceExtensions;
+  std::vector<const char *> deviceExtensions;
+
+  std::vector<vk::QueueFamilyProperties> queueFamilyProps;
+  uint32_t graphicIndex;
+
   struct {
     std::vector<vk::VertexInputBindingDescription> bindings;
     std::vector<vk::VertexInputAttributeDescription> attribute_description;
@@ -53,11 +60,7 @@ private:
   vk::Pipeline pipeline;
   vk::PipelineLayout pipelineLayout;
 
-  std::vector<const char *> instanceExtensions;
-  std::vector<const char *> deviceExtensions;
-
-  std::vector<vk::QueueFamilyProperties> queueFamilyProps;
-  uint32_t graphicIndex;
+  std::vector<VkFramebuffer> swapChainFramebuffers;
 
   static const unsigned WIDTH = 800;
   static const unsigned HEIGHT = 600;
