@@ -2,6 +2,7 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #define GLFW_EXPOSE_NATIVE_WIN32
+#include "shader.hpp"
 #include <GLFW/glfw3native.h>
 #include <algorithm>
 #include <format>
@@ -24,6 +25,10 @@ void VulkanApp::initVulkan() {
   pickPhysicalDevice();
   createLogicalDevice();
   createSwapChain();
+  createImageView();
+  createGraphicPipline();
+  createRenderPass();
+  present();
 }
 
 bool checkValidationLayerSupport(const std::vector<const char *> &layerNames) {
@@ -213,7 +218,9 @@ void VulkanApp::createSwapChain() {
           .setClipped(true);
 
   swapchain = device.createSwapchainKHR(swapchainInfo);
+}
 
+void VulkanApp::createImageView() {
   swapchainImages = device.getSwapchainImagesKHR(swapchain);
   frameCount = swapchainImages.size();
 
@@ -233,9 +240,167 @@ void VulkanApp::createSwapChain() {
                                      vk::ComponentSwizzle::eIdentity));
     swapchainIamgesViews[i] = device.createImageView(createImageViewInfo);
   }
+}
 
+void VulkanApp::createRenderPass() {
+  auto colorAttachment =
+      vk::AttachmentDescription{}
+          .setFormat(format)
+          .setSamples(vk::SampleCountFlagBits::e1)
+          .setLoadOp(vk::AttachmentLoadOp::eClear)
+          .setStoreOp(vk::AttachmentStoreOp::eStore)
+          .setStencilLoadOp(vk::AttachmentLoadOp::eDontCare)
+          .setStencilStoreOp(vk::AttachmentStoreOp::eDontCare)
+          .setInitialLayout(vk::ImageLayout::eUndefined)
+          .setFinalLayout(vk::ImageLayout::ePresentSrcKHR);
+
+  auto colorAttachmentRef =
+      vk::AttachmentReference{}.setAttachment(0).setLayout(
+          vk::ImageLayout::eColorAttachmentOptimal);
+
+  auto subpass = vk::SubpassDescription{}
+                     .setPipelineBindPoint(vk::PipelineBindPoint::eGraphics)
+                     .setColorAttachmentCount(1)
+                     .setPColorAttachments(&colorAttachmentRef);
+  auto renderPassInfo = vk::RenderPassCreateInfo()
+                            .setAttachmentCount(1)
+                            .setPAttachments(&colorAttachment)
+                            .setSubpassCount(1)
+                            .setPSubpasses(&subpass);
+  renderPass = device.createRenderPass(renderPassInfo);
+}
+void VulkanApp::createGraphicPipline() {
+  auto vertexShader = createShaderModule("Shaders\\vertex.spv", device);
+  auto fragmentShader = createShaderModule("Shaders\\fragement.spv", device);
+
+  using ShaderStage = vk::ShaderStageFlagBits;
+
+  auto vertexShaderCreateInfo = vk::PipelineShaderStageCreateInfo()
+                                    .setPName("main")
+                                    .setModule(vertexShader)
+                                    .setStage(ShaderStage::eVertex);
+
+  /*
+    auto SMEData =
+        vk::SpecializationMapEntry().setConstantID(0).setOffset(0).setSize(
+            sizeof(vk::Format));
+    auto specializationInfo = vk::SpecializationInfo()
+                                  .setDataSize(sizeof(vk::Format))
+                                  .setMapEntryCount(1)
+                                  .setPMapEntries(&SMEData)
+                                  .setPData(&data);
+                                  */
+
+  auto fragmentShaderCreateInfo = vk::PipelineShaderStageCreateInfo()
+                                      .setPName("main")
+                                      .setModule(fragmentShader)
+                                      .setStage(ShaderStage::eFragment);
+
+  std::vector<vk::PipelineShaderStageCreateInfo> pipelineShaderInfo{
+      vertexShaderCreateInfo, fragmentShaderCreateInfo};
+
+  std::vector<vk::DynamicState> dynamicStates = {
+      vk::DynamicState::eScissor,
+      vk::DynamicState::eViewport,
+      vk::DynamicState::eBlendConstants,
+  };
+
+  auto dynamicInfo =
+      vk::PipelineDynamicStateCreateInfo().setDynamicStates(dynamicStates);
+  auto viInfo =
+      vk::PipelineVertexInputStateCreateInfo()
+          .setVertexBindingDescriptions(vertex.bindings)
+          .setVertexAttributeDescriptions(vertex.attribute_description);
+  auto iaInfo = vk::PipelineInputAssemblyStateCreateInfo()
+                    .setTopology(vk::PrimitiveTopology::eTriangleList)
+                    .setPrimitiveRestartEnable(VK_FALSE);
+  auto rsInfo = vk::PipelineRasterizationStateCreateInfo()
+                    .setCullMode(vk::CullModeFlagBits::eBack)
+                    .setDepthBiasEnable(VK_FALSE)
+                    .setDepthClampEnable(VK_FALSE)
+                    .setFrontFace(vk::FrontFace::eClockwise)
+                    .setLineWidth(1.0f)
+                    .setPolygonMode(vk::PolygonMode::eFill)
+                    .setRasterizerDiscardEnable(VK_FALSE);
+  vk::Viewport viewport;
+  viewport.setMaxDepth(1.0f);
+  viewport.setMinDepth(0.0f);
+  viewport.setX(0.0f);
+  viewport.setY(0.0f);
+  viewport.setWidth(width);
+  viewport.setHeight(height);
+
+  auto scissor = vk::Rect2D()
+                     .setOffset(vk::Offset2D(0.0f, 0.0f))
+                     .setExtent(vk::Extent2D(width, height));
+  auto vpInfo = vk::PipelineViewportStateCreateInfo()
+                    .setScissorCount(1)
+                    .setPScissors(&scissor)
+                    .setViewportCount(1)
+                    .setPViewports(&viewport);
+  auto dsInfo = vk::PipelineDepthStencilStateCreateInfo()
+                    .setDepthTestEnable(VK_TRUE)
+                    .setDepthWriteEnable(VK_TRUE)
+                    .setDepthCompareOp(vk::CompareOp::eLess)
+                    .setDepthBoundsTestEnable(VK_FALSE)
+                    .setStencilTestEnable(VK_FALSE);
+  auto attState =
+      vk::PipelineColorBlendAttachmentState()
+          .setColorWriteMask(
+              vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+              vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA)
+          .setBlendEnable(VK_TRUE)
+          .setColorBlendOp(vk::BlendOp::eAdd)
+          .setSrcColorBlendFactor(vk::BlendFactor::eSrc1Alpha)
+          .setDstAlphaBlendFactor(vk::BlendFactor::eOneMinusSrcAlpha)
+          .setAlphaBlendOp(vk::BlendOp::eAdd)
+          .setSrcAlphaBlendFactor(vk::BlendFactor::eZero)
+          .setDstAlphaBlendFactor(vk::BlendFactor::eOne);
+  auto cbInfo = vk::PipelineColorBlendStateCreateInfo()
+                    .setLogicOpEnable(VK_FALSE)
+                    .setAttachmentCount(1)
+                    .setPAttachments(&attState)
+                    .setLogicOp(vk::LogicOp::eNoOp);
+  auto msInfo = vk::PipelineMultisampleStateCreateInfo()
+                    .setAlphaToCoverageEnable(VK_TRUE)
+                    .setAlphaToOneEnable(VK_FALSE)
+                    .setMinSampleShading(1.0f)
+                    .setRasterizationSamples(vk::SampleCountFlagBits::e1)
+                    .setSampleShadingEnable(VK_TRUE);
+  auto range = vk::PushConstantRange()
+                   .setOffset(0)
+                   //.setSize(dataSize)
+                   .setStageFlags(vk::ShaderStageFlagBits::eAll);
+  auto plInfo = vk::PipelineLayoutCreateInfo()
+                    .setPushConstantRangeCount(1)
+                    .setPPushConstantRanges(&range);
+
+  pipelineLayout = device.createPipelineLayout(plInfo);
+
+  auto pipelineInfo = vk::GraphicsPipelineCreateInfo()
+                          .setStages(pipelineShaderInfo)
+                          .setPVertexInputState(&viInfo)
+                          .setPInputAssemblyState(&iaInfo)
+                          .setPViewportState(&vpInfo)
+                          .setPRasterizationState(&rsInfo)
+                          .setPMultisampleState(&msInfo)
+                          .setPDepthStencilState(&dsInfo)
+                          .setPColorBlendState(&cbInfo)
+                          .setPDynamicState(&dynamicInfo)
+                          .setLayout(pipelineLayout)
+                          .setRenderPass(renderPass)
+                          .setSubpass(0);
+  if (auto p = device.createGraphicsPipeline(nullptr, pipelineInfo);
+      p.result == vk::Result::eSuccess) {
+    pipeline = p.value;
+  } else {
+    throw std::runtime_error("Create graphic pipline failed.");
+  }
+}
+
+void VulkanApp::present() {
   auto presentInfo = vk::PresentInfoKHR()
-                         .setPImageIndices(&currentImage)
+                         .setImageIndices(currentImage)
                          .setSwapchainCount(1)
                          .setPSwapchains(&swapchain);
   if (graphicQueue.presentKHR(presentInfo) != vk::Result::eSuccess) {

@@ -13,6 +13,10 @@ public:
   void pickPhysicalDevice();
   void createLogicalDevice();
   void createSwapChain();
+  void createImageView();
+  void createRenderPass();
+  void createGraphicPipline();
+  void present();
 
   void initWindow();
   void mainLoop();
@@ -41,6 +45,13 @@ private:
   uint32_t frameCount = 0;
   uint32_t width = 0, height = 0;
 
+  struct {
+    std::vector<vk::VertexInputBindingDescription> bindings;
+    std::vector<vk::VertexInputAttributeDescription> attribute_description;
+  } vertex;
+  vk::RenderPass renderPass;
+  vk::Pipeline pipeline;
+  vk::PipelineLayout pipelineLayout;
 
   std::vector<const char *> instanceExtensions;
   std::vector<const char *> deviceExtensions;
